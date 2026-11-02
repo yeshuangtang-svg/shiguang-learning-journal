@@ -1,6 +1,8 @@
-# 拾光 · 学习日志 Agent
+# 拾光学习日志 · Shiguang Learning Journal
 
 一个可以通过自然语言管理学习日志的个人 Agent，同时提供浏览器界面和 HTTP API。Python 3.10+ 即可运行，无需安装第三方依赖。
+
+当前版本为 **v1.4.0**，完整功能介绍、安装步骤与备份说明见[仓库主页](../README.md)。
 
 ## Windows 桌面版
 
@@ -98,7 +100,7 @@ print(result["actions"])  # 实际执行的工具及结果
 | `POST /api/entries` | 手动新增日志 |
 | `GET/PATCH/DELETE /api/entries/{id}` | 读取、部分更新、删除日志 |
 | `GET /api/summary` | 统计，可按起止日期筛选 |
-| `GET /api/export` | 导出全部日志 JSON |
+| `GET /api/export` | 导出日志、插图、Markdown 文档与知识收藏 JSON |
 | `POST /api/import` | 原子合并备份；同编号覆盖，其余保留 |
 | `GET/POST /api/config` | 读取脱敏配置、设置模型；不返回密钥 |
 | `GET /api/health` | 服务及配置状态 |
@@ -110,7 +112,7 @@ print(result["actions"])  # 实际执行的工具及结果
 - 日志与聊天历史保存到 `data/study.sqlite3`；重启、刷新页面都不会丢失，清理浏览器缓存不删除这些日志。
 - 网页填写的模型密钥保存在本机 `data/config.json`，不会通过配置读取接口返回。此文件是本地明文配置，应保留在自己的设备上；也可用环境变量提供密钥。
 - 聊天消息及为回答问题检索到的日志会发送到你选定的模型服务。手动记录不调用模型。
-- JSON 导出包含学习日志，不包含密钥及聊天历史。完整迁移可先停止服务，再复制 `data/` 目录；分享源码时不要包含 `data/` 和 `.env`。
+- JSON 导出包含学习日志、库内插图、Markdown 文档与未来学习知识，不包含密钥、聊天历史、PDF 及文件历史。完整迁移可先停止服务，再复制 `data/` 目录；分享源码时不要包含 `data/` 和 `.env`。
 - 默认只监听本机。若其他本机程序需要鉴权，可设置 `AGENT_API_TOKEN`，调用时发送 `Authorization: Bearer <token>`。这个令牌与模型服务的 API Key 不同。
 - 局域网访问须主动配置 `AGENT_HOST=0.0.0.0`、至少24字符的 `AGENT_API_TOKEN` 和 `AGENT_ALLOWED_HOSTS=你的局域网IP`。这是单用户服务；公开互联网部署需要额外的 HTTPS、用户隔离和运维措施。
 
