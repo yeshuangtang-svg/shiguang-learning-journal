@@ -85,8 +85,7 @@ class FutureMixin:
 
     def delete_future(self, identity):
         from library import resource_id
-        with self._connection() as connection:
-            return connection.execute('DELETE FROM future_learning WHERE id=?', (resource_id(identity),)).rowcount > 0
+        return self.trash_resource('future', resource_id(identity))
 
 
 def validate_future_backup(payload):

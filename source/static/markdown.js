@@ -27,6 +27,7 @@
     });
     fragment.querySelectorAll('a').forEach(link => {
       const href = link.getAttribute('href') || '';
+      if (/^#resource\/(entry|document|future)\/[A-Za-z0-9_%.-]+$/.test(href)) { link.classList.add('source-link'); return; }
       if (!webURL(href) && !/^mailto:[^\s<>]+$/i.test(href)) link.removeAttribute('href');
       else { link.target = '_blank'; link.rel = 'noopener noreferrer'; }
     });

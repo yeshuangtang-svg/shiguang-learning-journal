@@ -137,3 +137,22 @@ class DocumentFiles:
             else:
                 raise ValueError('不支持的文件操作。')
             return {'opened': True, 'path': str(path)}
+    def history(self, identity):
+        import datetime
+        info=self.prepare(identity); folder=Path(info['directory']); current={info['md_path'],info['pdf_path']}
+        items=[]
+        for path in folder.rglob('*'):
+            if path.is_file() and path.suffix.lower() in ('.md','.pdf') and str(path) not in current and path.resolve().is_relative_to(folder) and not path.is_symlink():
+                relative=path.relative_to(folder).as_posix()
+                items.append({'id':hashlib.sha256(relative.encode()).hexdigest(),'name':path.name,'type':path.suffix[1:],'size':path.stat().st_size,'modified':datetime.datetime.fromtimestamp(path.stat().st_mtime,datetime.timezone.utc).isoformat()})
+        return sorted(items,key=lambda x:x['modified'],reverse=True)
+
+    def history_content(self, identity, version):
+        info=self.prepare(identity); folder=Path(info['directory'])
+        if not re.fullmatch('[a-f0-9]{64}',version): raise ValueError('版本编号无效。')
+        for item in self.history(identity):
+            if item['id']==version:
+                for path in folder.rglob('*'):
+                    if path.is_file() and path.resolve().is_relative_to(folder) and hashlib.sha256(path.relative_to(folder).as_posix().encode()).hexdigest()==version:
+                        return path.read_bytes(), 'application/pdf' if item['type']=='pdf' else 'text/markdown; charset=utf-8', item['name']
+        raise KeyError('历史版本不存在。')

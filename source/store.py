@@ -9,6 +9,7 @@ import re
 import sqlite3
 import uuid
 
+from workspace import WorkspaceMixin, create_workspace_tables
 from library import LibraryMixin, create_tables, export_resources, import_resources, validate_backup
 from future import FutureMixin, create_table, validate_future_backup, import_future
 
@@ -92,7 +93,7 @@ def _object(raw, allowed):
         raise ValueError("学习记录包含不支持的字段。")
 
 
-class Store(LibraryMixin, FutureMixin):
+class Store(WorkspaceMixin, LibraryMixin, FutureMixin):
     """Each operation opens and closes its own SQLite connection (5 s timeout)."""
 
     def __init__(self, db_path):
@@ -131,6 +132,7 @@ class Store(LibraryMixin, FutureMixin):
             connection.execute("CREATE INDEX IF NOT EXISTS entries_subject_idx ON entries(subject)")
             create_tables(connection)
             create_table(connection)
+            create_workspace_tables(connection)
 
     @staticmethod
     def _migrate_optional_duration(connection):
@@ -230,10 +232,8 @@ class Store(LibraryMixin, FutureMixin):
             raise ValueError("起始日期不能晚于结束日期。")
         return conditions, values
 
-    def list_entries(self, date_from=None, date_to=None, subject=None, query=None, limit=100):
+    def entry_filter(self, date_from=None, date_to=None, subject=None, query=None):
         conditions, values = self._range(date_from, date_to)
-        if type(limit) is not int or not 1 <= limit <= 10_000:
-            raise ValueError("查询数量须为 1–10000 之间的整数。")
         if subject is not None:
             conditions.append("subject = ?")
             values.append(_text(subject, "科目", 60, required=True, trim=True))
@@ -245,6 +245,12 @@ class Store(LibraryMixin, FutureMixin):
                 conditions.append("(" + " OR ".join('"' + field + '" LIKE ? ESCAPE \'\\\'' for field in fields) + ")")
                 values.extend([f"%{escaped}%"] * len(fields))
         where = " WHERE " + " AND ".join(conditions) if conditions else ""
+        return where, values
+
+    def list_entries(self, date_from=None, date_to=None, subject=None, query=None, limit=100):
+        if type(limit) is not int or not 1 <= limit <= 10000:
+            raise ValueError("查询数量须为 1–10000 之间的整数。")
+        where, values = self.entry_filter(date_from, date_to, subject, query)
         with self._connection() as connection:
             rows = connection.execute(
                 f"SELECT * FROM entries{where} ORDER BY date DESC, created_at DESC, id DESC LIMIT ?", (*values, limit)
@@ -325,7 +331,4 @@ class Store(LibraryMixin, FutureMixin):
         return result
 
     def delete_entry(self, id):
-        id = _identifier(id)
-        with self._connection() as connection:
-            cursor = connection.execute("DELETE FROM entries WHERE id = ?", (id,))
-            return cursor.rowcount > 0
+        return self.trash_resource("entry", _identifier(id))

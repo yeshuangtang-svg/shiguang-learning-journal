@@ -33,10 +33,10 @@ async function loadFuture() {
       const action = node('button', 'text-button', item.status === 'pending' ? '开始学习 →' : item.status === 'learning' ? '标记学完 ✓' : '放回待学习');
       action.addEventListener('click', async () => {
         action.disabled = true;
-        try { await api('/api/future-learning/' + item.id, { method: 'PATCH', body: { status: item.status === 'pending' ? 'learning' : item.status === 'learning' ? 'done' : 'pending' } }); await loadFuture(); }
+        try { await api('/api/future-learning/' + item.id, { method: 'PATCH', body: { status: item.status === 'pending' ? 'learning' : item.status === 'learning' ? 'done' : 'pending' } }); await loadFuture(); if(item.status === 'learning')openLinkChooser('future',item.id); }
         catch (error) { notify(error.message, true); } finally { action.disabled = false; }
       });
-      footer.append(action); card.append(footer); list.append(card);
+      footer.append(action, workButton('记学习笔记',()=>startLinkedNote('future',item.id,'entry'),'text-button'),workButton('关联成果',()=>openLinkChooser('future',item.id),'text-button')); card.append(footer); list.append(card);
     });
   } catch (error) {
     if (sequence !== futureState.sequence) return;
@@ -45,16 +45,16 @@ async function loadFuture() {
   }
 }
 function openFuture(item = null) {
-  futureState.id = item?.id || null;
+  futureState.id = item?.id || null; futureState.draftKey='future:'+(item?.id||crypto.randomUUID());futureState.updated=item?.updated_at||'';work.noteOrigin=null;
   const form = $('#future-form'); form.reset();
   for (const key of ['title', 'subject', 'content', 'url', 'status']) form.elements[key].value = item?.[key] || (key === 'status' ? 'pending' : '');
   $('#future-dialog-title').textContent = item ? '编辑未来学习知识' : '收藏未来学习知识';
   $('#future-error').hidden = true; $('#delete-future').hidden = !item;
-  futureState.baseline = futureSnapshot(); $('#future-dialog').showModal(); form.elements.title.focus();
+  futureState.baseline = futureSnapshot(); $('#future-dialog').showModal(); form.elements.title.focus(); showRelations('future',futureState.id,$('#future-relations'));
 }
 function closeFuture() {
   if (futureState.saving) return;
-  if (futureDirty() && !window.confirm('还有未保存的收藏内容，确定放弃吗？')) return;
+  if (futureDirty() && !window.confirm('还有未保存的收藏内容，关闭后可从草稿恢复。确定关闭吗？')) return;
   $('#future-dialog').close();
 }
 async function saveFuture(event) {
@@ -62,19 +62,19 @@ async function saveFuture(event) {
   const form = $('#future-form'); if (!form.reportValidity()) return;
   const body = Object.fromEntries(new FormData(form)); body.title = body.title.trim();
   if (!body.title) { form.elements.title.focus(); return; }
-  futureState.saving = true; $('#save-future').disabled = true; $('#delete-future').disabled = true; $('#future-error').hidden = true;
+  futureState.saving = true; $('#future-form').inert=true; $('#save-future').disabled = true; $('#delete-future').disabled = true; $('#future-error').hidden = true;
   try {
     await api('/api/future-learning' + (futureState.id ? '/' + futureState.id : ''), { method: futureState.id ? 'PATCH' : 'POST', body });
-    $('#future-dialog').close(); notify('未来学习知识已保存。'); await loadFuture();
+    clearDraft('future'); $('#future-dialog').close(); notify('未来学习知识已保存。'); await loadFuture();
   } catch (error) { $('#future-error').textContent = error.message; $('#future-error').hidden = false; }
-  finally { futureState.saving = false; $('#save-future').disabled = false; $('#delete-future').disabled = false; }
+  finally { futureState.saving = false; $('#future-form').inert=false; $('#save-future').disabled = false; $('#delete-future').disabled = false; }
 }
 async function deleteFuture() {
-  if (futureState.saving || !futureState.id || !window.confirm('确定删除这条知识收藏吗？')) return;
-  futureState.saving = true; $('#save-future').disabled = true; $('#delete-future').disabled = true;
-  try { await api('/api/future-learning/' + futureState.id, { method: 'DELETE' }); $('#future-dialog').close(); notify('知识收藏已删除。'); await loadFuture(); }
+  if (futureState.saving || !futureState.id || !window.confirm('将这条收藏移入回收站？可随时恢复。')) return;
+  futureState.saving = true; $('#future-form').inert=true; $('#save-future').disabled = true; $('#delete-future').disabled = true;
+  try { await api('/api/future-learning/' + futureState.id, { method: 'DELETE' }); $('#future-dialog').close(); clearDraft('future'); notify('知识收藏已移入回收站。'); await loadFuture(); }
   catch (error) { $('#future-error').textContent = error.message; $('#future-error').hidden = false; }
-  finally { futureState.saving = false; $('#save-future').disabled = false; $('#delete-future').disabled = false; }
+  finally { futureState.saving = false; $('#future-form').inert=false; $('#save-future').disabled = false; $('#delete-future').disabled = false; }
 }
 function setupFuture() {
   $('#add-future').addEventListener('click', () => openFuture());
@@ -87,6 +87,6 @@ function setupFuture() {
   let timer;
   $('#future-query').addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(loadFuture, 250); });
   $('#future-reset').addEventListener('click', () => { $('#future-query').value = ''; $('#future-filter').value = ''; loadFuture(); });
-  window.addEventListener('beforeunload', event => { if (futureDirty() || futureState.saving) { event.preventDefault(); event.returnValue = ''; } });
+  window.addEventListener('beforeunload', event => { if (work.restoring) return; if (futureDirty() || futureState.saving) { event.preventDefault(); event.returnValue = ''; } });
   window.addEventListener('keydown', event => { if ($('#future-dialog').open && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') { event.preventDefault(); $('#future-form').requestSubmit(); } });
 }

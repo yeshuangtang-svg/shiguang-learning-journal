@@ -2,7 +2,7 @@
   "openapi": "3.0.3",
   "info": {
     "title": "拾光学习日志 Agent API",
-    "version": "1.4.0",
+    "version": "1.5.0",
     "description": "对话学习日志 Agent：记录问题、知识点、解决过程与收获，无需学习时长。令牌仅在服务配置 AGENT_API_TOKEN 时必需。重试使用相同 request_id。"
   },
   "servers": [
@@ -2265,6 +2265,701 @@
                   }
                 },
                 "additionalProperties": false
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/search": {
+      "get": {
+        "summary": "统一检索日志、文档和收藏，返回命中片段、来源地址与分页信息",
+        "responses": {
+          "200": {
+            "description": "成功"
+          },
+          "400": {
+            "description": "参数无效或冲突，现有数据保留"
+          },
+          "401": {
+            "description": "需要访问令牌"
+          }
+        },
+        "parameters": [
+          {
+            "name": "query",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ]
+      }
+    },
+    "/api/entries-page": {
+      "get": {
+        "summary": "分页读取日志摘要、总数与主题列表",
+        "responses": {
+          "200": {
+            "description": "成功"
+          },
+          "400": {
+            "description": "参数无效或冲突，现有数据保留"
+          },
+          "401": {
+            "description": "需要访问令牌"
+          }
+        },
+        "parameters": [
+          {
+            "name": "query",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "subject",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "date_from",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "date_to",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ]
+      }
+    },
+    "/api/links": {
+      "get": {
+        "summary": "读取双向关联内容",
+        "responses": {
+          "200": {
+            "description": "成功"
+          },
+          "400": {
+            "description": "参数无效或冲突，现有数据保留"
+          },
+          "401": {
+            "description": "需要访问令牌"
+          }
+        },
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "post": {
+        "summary": "关联两项已有内容",
+        "responses": {
+          "200": {
+            "description": "成功"
+          },
+          "400": {
+            "description": "参数无效或冲突，现有数据保留"
+          },
+          "401": {
+            "description": "需要访问令牌"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "a_kind",
+                  "a_id",
+                  "b_kind",
+                  "b_id"
+                ],
+                "properties": {
+                  "a_kind": {
+                    "type": "string"
+                  },
+                  "a_id": {
+                    "type": "string"
+                  },
+                  "b_kind": {
+                    "type": "string"
+                  },
+                  "b_id": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/links/{id}": {
+      "delete": {
+        "summary": "解除关联，不删除内容",
+        "responses": {
+          "200": {
+            "description": "成功"
+          },
+          "400": {
+            "description": "参数无效或冲突，现有数据保留"
+          },
+          "401": {
+            "description": "需要访问令牌"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/linked-notes": {
+      "post": {
+        "summary": "原子创建笔记并关联原内容",
+        "responses": {
+          "200": {
+            "description": "成功"
+          },
+          "400": {
+            "description": "参数无效或冲突，现有数据保留"
+          },
+          "401": {
+            "description": "需要访问令牌"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "origin_kind",
+                  "origin_id",
+                  "kind",
+                  "data"
+                ],
+                "properties": {
+                  "origin_kind": {
+                    "type": "string"
+                  },
+                  "origin_id": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "entry",
+                      "document"
+                    ]
+                  },
+                  "data": {
+                    "type": "object"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/trash": {
+      "get": {
+        "summary": "列出可恢复的日志、文档与收藏",
+        "responses": {
+          "200": {
+            "description": "成功"
+          },
+          "400": {
+            "description": "参数无效或冲突，现有数据保留"
+          },
+          "401": {
+            "description": "需要访问令牌"
+          }
+        }
+      }
+    },
+    "/api/trash/{id}/restore": {
+      "post": {
+        "summary": "恢复原编号及关联，拒绝覆盖冲突",
+        "responses": {
+          "200": {
+            "description": "成功"
+          },
+          "400": {
+            "description": "参数无效或冲突，现有数据保留"
+          },
+          "401": {
+            "description": "需要访问令牌"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/drafts": {
+      "get": {
+        "summary": "列出持久化草稿",
+        "responses": {
+          "200": {
+            "description": "成功"
+          },
+          "400": {
+            "description": "参数无效或冲突，现有数据保留"
+          },
+          "401": {
+            "description": "需要访问令牌"
+          }
+        }
+      }
+    },
+    "/api/drafts/{key}": {
+      "post": {
+        "summary": "自动保存草稿；key 格式为类型:编号，最大 3 MiB",
+        "responses": {
+          "200": {
+            "description": "成功"
+          },
+          "400": {
+            "description": "参数无效或冲突，现有数据保留"
+          },
+          "401": {
+            "description": "需要访问令牌"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "delete": {
+        "summary": "清除一份草稿",
+        "responses": {
+          "200": {
+            "description": "成功"
+          },
+          "400": {
+            "description": "参数无效或冲突，现有数据保留"
+          },
+          "401": {
+            "description": "需要访问令牌"
+          }
+        },
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/documents/{id}/position": {
+      "get": {
+        "summary": "读取上次阅读位置",
+        "responses": {
+          "200": {
+            "description": "成功"
+          },
+          "400": {
+            "description": "参数无效或冲突，现有数据保留"
+          },
+          "401": {
+            "description": "需要访问令牌"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "post": {
+        "summary": "保存章节与相对阅读位置",
+        "responses": {
+          "200": {
+            "description": "成功"
+          },
+          "400": {
+            "description": "参数无效或冲突，现有数据保留"
+          },
+          "401": {
+            "description": "需要访问令牌"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "ratio"
+                ],
+                "properties": {
+                  "ratio": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1
+                  },
+                  "heading": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/documents/{id}/history": {
+      "get": {
+        "summary": "列出归档的 MD 与 PDF 历史版本",
+        "responses": {
+          "200": {
+            "description": "成功"
+          },
+          "400": {
+            "description": "参数无效或冲突，现有数据保留"
+          },
+          "401": {
+            "description": "需要访问令牌"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/documents/{id}/history/{version}": {
+      "get": {
+        "summary": "读取指定历史文件",
+        "responses": {
+          "200": {
+            "description": "成功"
+          },
+          "400": {
+            "description": "参数无效或冲突，现有数据保留"
+          },
+          "401": {
+            "description": "需要访问令牌"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/documents/{id}/generate-pdf": {
+      "post": {
+        "summary": "使用本机 Edge 生成并关联当前源文件 PDF",
+        "responses": {
+          "200": {
+            "description": "成功"
+          },
+          "400": {
+            "description": "参数无效或冲突，现有数据保留"
+          },
+          "401": {
+            "description": "需要访问令牌"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/backups": {
+      "get": {
+        "summary": "列出本机完整资料 ZIP 备份",
+        "responses": {
+          "200": {
+            "description": "成功"
+          },
+          "400": {
+            "description": "参数无效或冲突，现有数据保留"
+          },
+          "401": {
+            "description": "需要访问令牌"
+          }
+        }
+      },
+      "post": {
+        "summary": "创建含数据库、PDF、历史、配图、草稿、关联的备份",
+        "responses": {
+          "200": {
+            "description": "成功"
+          },
+          "400": {
+            "description": "参数无效或冲突，现有数据保留"
+          },
+          "401": {
+            "description": "需要访问令牌"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "include_config": {
+                    "type": "boolean",
+                    "default": false
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/backups/{id}/download": {
+      "get": {
+        "summary": "下载完整资料备份",
+        "responses": {
+          "200": {
+            "description": "成功"
+          },
+          "400": {
+            "description": "参数无效或冲突，现有数据保留"
+          },
+          "401": {
+            "description": "需要访问令牌"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/backups/restore": {
+      "post": {
+        "summary": "依据预览恢复资料，先自动备份当前数据",
+        "responses": {
+          "200": {
+            "description": "成功"
+          },
+          "400": {
+            "description": "参数无效或冲突，现有数据保留"
+          },
+          "401": {
+            "description": "需要访问令牌"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "token"
+                ],
+                "properties": {
+                  "token": {
+                    "type": "string"
+                  },
+                  "restore_config": {
+                    "type": "boolean",
+                    "default": false
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/backups/preview": {
+      "post": {
+        "summary": "上传 ZIP 并验证清单、数据库、文件哈希及路径，返回恢复预览",
+        "responses": {
+          "200": {
+            "description": "成功"
+          },
+          "400": {
+            "description": "参数无效或冲突，现有数据保留"
+          },
+          "401": {
+            "description": "需要访问令牌"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/zip": {
+              "schema": {
+                "type": "string",
+                "format": "binary",
+                "description": "最大 512 MiB，解压总量最大 2 GiB；不改变当前资料"
               }
             }
           }

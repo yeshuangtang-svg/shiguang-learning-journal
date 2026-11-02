@@ -212,8 +212,7 @@ class LibraryMixin:
 
     def delete_document(self, identity):
         identity = resource_id(identity)
-        with self._connection() as connection:
-            return connection.execute("DELETE FROM documents WHERE id = ?", (identity,)).rowcount > 0
+        return self.trash_resource("document", identity)
 
 
 def export_resources(connection):

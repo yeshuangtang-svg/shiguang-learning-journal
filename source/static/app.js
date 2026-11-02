@@ -17,7 +17,7 @@ function node(tag, className = '', content) { const result = document.createElem
 function icon(name) { const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); const use = document.createElementNS('http://www.w3.org/2000/svg', 'use'); use.setAttribute('href', '#i-' + name); svg.setAttribute('aria-hidden', 'true'); svg.append(use); return svg; }
 function today() { return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date()); }
 function number(value) { return Number(value || 0).toLocaleString('zh-CN'); }
-function notify(message, error = false) { const item = node('div', 'toast' + (error ? ' error' : '')); item.append(icon(error ? 'close' : 'check'), node('span', '', message)); $('#toast-region').append(item); setTimeout(() => item.remove(), error ? 6500 : 3800); }
+function notify(message, error = false) { const item = node('div', 'toast' + (error ? ' error' : '')); item.append(icon(error ? 'close' : 'check'), node('span', '', message)); $('#toast-region').append(item); while ($('#toast-region').children.length>3) $('#toast-region').firstElementChild.remove(); setTimeout(() => item.remove(), error ? 6500 : 3800); }
 
 class APIError extends Error { constructor(message, status = 0) { super(message); this.status = status; } }
 async function api(path, options = {}) {
@@ -40,18 +40,21 @@ async function api(path, options = {}) {
 
 function showBanner(text) { $('#connection-banner-text').textContent = text; $('#connection-banner').hidden = false; }
 function setView(view, setHash = true) {
-  if (!['chat', 'logs', 'documents', 'future', 'overview', 'settings'].includes(view)) view = 'chat';
+  if (!['chat', 'logs', 'documents', 'future', 'overview', 'settings', 'search', 'recovery'].includes(view)) view = 'chat';
   if (state.view === 'documents' && view !== 'documents' && !canLeaveDocument()) { history.replaceState(null, '', '#documents'); return; }
   state.view = view;
   $$('.view').forEach(item => { const active = item.id === 'view-' + view; item.hidden = !active; item.classList.toggle('active', active); });
   $$('.nav-item').forEach(item => { const active = item.dataset.view === view; item.classList.toggle('active', active); if (active) item.setAttribute('aria-current', 'page'); else item.removeAttribute('aria-current'); });
-  const label = { chat: '学习助手', logs: '学习日志', documents: '文档', future: '未来学习知识', overview: '学习概览', settings: '连接设置' }[view];
+  const label = { chat: '学习助手', logs: '学习日志', documents: '文档', future: '未来学习知识', overview: '学习概览', settings: '连接设置', search: '统一搜索', recovery: '草稿与回收站' }[view];
   $('#breadcrumb').replaceChildren(document.createTextNode('工作台 '), node('span', '', '/'), document.createTextNode(' ' + label));
   if (setHash && location.hash !== '#' + view) history.replaceState(null, '', '#' + view);
   if (view === 'logs') loadEntries();
   if (view === 'overview') loadSummary();
   if (view === 'documents') loadDocuments();
   if (view === 'future') loadFuture();
+  if (view === 'search') searchWorkspace();
+  if (view === 'recovery') loadRecovery();
+  if (view === 'settings') loadBackups();
 }
 
 function updateConnectionUI() {
@@ -105,7 +108,7 @@ function appendMessage(role, content, options = {}) {
   const main = node('div', 'message-main');
   main.append(node('div', 'message-name', role === 'user' ? '你' : '拾光助手'));
   if (options.thinking) { const dots = node('div', 'thinking-dots'); dots.setAttribute('aria-label', '拾光正在整理思路'); dots.append(node('i'), node('i'), node('i')); main.append(dots); }
-  else main.append(node('div', 'message-content', content));
+  else { const text = node('div', 'message-content'); if (role === 'assistant') { text.classList.add('markdown-body'); renderMarkdown(text, content); } else text.textContent = content; main.append(text); }
   if (options.actions?.length) {
     const actions = node('div', 'message-actions');
     options.actions.forEach(action => {
@@ -120,6 +123,8 @@ function appendMessage(role, content, options = {}) {
       const badge = node('span', 'action-badge', label); badge.title = tool; actions.append(badge);
     });
     main.append(actions);
+    const sources = new Map(); (options.actions || []).filter(a => a.ok && ['search_knowledge','read_knowledge'].includes(a.tool)).forEach(a => { (a.result.items || [a.result]).forEach(r => { if (r.url && r.title) sources.set(r.url,r); }); });
+    if (sources.size) { const refs = node('div','source-list'); refs.append(node('small','','参考资料')); [...sources.values()].slice(0,10).forEach(r => refs.append(sourceLink(r))); main.append(refs); }
   }
   (options.warnings || []).forEach(warning => main.append(node('div', 'message-warning', typeof warning === 'string' ? warning : JSON.stringify(warning))));
   wrapper.append(avatar, main); $('#messages').append(wrapper); scrollChat(); return wrapper;
@@ -154,7 +159,7 @@ async function sendMessage(event) {
   const thinking = appendMessage('assistant', '', { thinking: true });
   try {
     const result = await api('/api/chat', { method: 'POST', body: payload });
-    thinking.remove();
+    thinking.remove(); clearDraft('chat');
     if (result.session_id) { state.sessionId = String(result.session_id); writeStorage(localStorage, SESSION_KEY, state.sessionId); }
     appendMessage('assistant', result.reply || '已完成。', { actions: result.actions, warnings: result.warnings });
     await Promise.allSettled([loadSummary(), state.view === 'logs' ? loadEntries() : Promise.resolve()]);
@@ -192,53 +197,57 @@ function renderCharts(summary) {
   const maxSubject = Math.max(1, ...(summary.subjects || []).map(subject => Number(subject.entries || 0)));
   [...summary.subjects].sort((a, b) => b.entries - a.entries).forEach(subject => { const row = node('div', 'subject-row'); const head = node('div', 'subject-row-head'); head.append(node('span', '', subject.subject || '未分类'), node('span', '', number(subject.entries) + ' 篇')); const track = node('div', 'subject-track'); const fill = node('div', 'subject-fill'); fill.style.width = Math.max(0, Number(subject.entries || 0)) / maxSubject * 100 + '%'; track.append(fill); row.append(head, track); subjects.append(row); });
 }
-async function loadEntries() {
+async function loadEntries(reset = true) {
+  if (reset !== false) state.entryOffset = 0;
   const sequence = ++state.filterSequence;
-  const query = new URLSearchParams();
-  [['query', '#log-query'], ['subject', '#filter-subject'], ['date_from', '#filter-from'], ['date_to', '#filter-to']].forEach(([key, selector]) => { const value = $(selector).value.trim(); if (value) query.set(key, value); });
+  const query = new URLSearchParams({limit:20,offset:state.entryOffset||0});
+  [['query','#log-query'],['subject','#filter-subject'],['date_from','#filter-from'],['date_to','#filter-to']].forEach(([key,selector])=>{const value=$(selector).value.trim();if(value)query.set(key,value);});
   try {
-    const result = await api('/api/entries?limit=10000&' + query.toString()); if (sequence !== state.filterSequence) return;
-    state.entries = result.entries || []; renderEntries(query.size > 0);
-  } catch (error) { if (sequence !== state.filterSequence) return; $('#entries-count').textContent = '日志暂时无法加载'; const empty = emptyState('暂时无法读取日志', error.message, error.status === 401 ? '填写访问令牌' : '重新加载', () => error.status === 401 ? setView('settings') : loadEntries()); disposeEntryList(); $('#entries-list').replaceChildren(empty); }
+    const result=await api('/api/entries-page?'+query); if(sequence!==state.filterSequence)return;
+    state.entries=result.entries;state.entryTotal=result.total;state.entryMore=result.has_more;renderEntries(query.has('query')||query.has('subject')||query.has('date_from')||query.has('date_to'));
+    const filters=$('#subject-shortcuts');filters.replaceChildren();result.subjects.slice(0,20).forEach(subject=>filters.append(workButton(subject,()=>{$('#filter-subject').value=subject;loadEntries();},'subject-chip'+($('#filter-subject').value===subject?' active':''))));
+    $('#entries-prev').disabled=!state.entryOffset;$('#entries-next').disabled=!result.has_more;$('#entries-page').textContent=(result.total?Math.floor((state.entryOffset||0)/20)+1:0)+' / '+Math.ceil(result.total/20);
+  } catch(error) { if(sequence===state.filterSequence){$('#entries-count').textContent=error.message;$('#entries-list').replaceChildren(emptyState('日志暂时无法加载',error.message,'重试',()=>loadEntries()));} }
 }
 function emptyState(title, description, buttonText, handler) { const empty = node('div', 'empty-state'); empty.append(icon('book'), node('h2', '', title), node('p', '', description)); if (buttonText) { const button = node('button', 'button button-secondary', buttonText); button.addEventListener('click', handler); empty.append(button); } return empty; }
 function disposeEntryList() { $$('.entry-prose', $('#entries-list')).forEach(element => window.StudyMarkdown?.dispose(element)); }
 function renderEntries(filtered) {
-  $('#entries-count').textContent = '共 ' + number(state.entries.length) + ' 篇' + (filtered ? '匹配记录' : '学习记录');
-  const list = $('#entries-list'); disposeEntryList(); list.replaceChildren();
-  if (!state.entries.length) { list.append(emptyState(filtered ? '还没有找到这段学习足迹' : '第一篇日志，从今天开始', filtered ? '试试其他关键词，或调整日期与学科筛选。' : '不必写得完整，记下一点收获，就是一个很好的开始。', filtered ? '清除筛选' : '写下第一篇', filtered ? clearFilters : () => openEntry())); return; }
-  state.entries.forEach(entry => {
-    const card = node('article', 'entry-card'); const date = node('div', 'entry-date'); const dateParts = String(entry.date || '').split('-'); date.append(node('strong', '', dateParts[2] || '—'), node('span', '', dateParts[0] && dateParts[1] ? dateParts[0] + '.' + dateParts[1] : '未注明'));
-    const content = node('div', 'entry-content'); content.append(node('h2', '', entry.title || '学习记录'));
-    const meta = node('div', 'entry-meta'); meta.append(node('span', 'subject-badge', entry.subject || '未分类')); if (entry.mood) meta.append(node('span', '', MOOD_LABELS[entry.mood] || entry.mood)); const prose = node('div', 'markdown-body entry-prose'); content.append(meta, prose); renderMarkdown(prose, entry.content || '');
-    [['收获与思考', entry.reflection], ['下一步', entry.next]].forEach(([label, text]) => { if (text) { const detail = node('div', 'entry-detail'); detail.append(node('strong', '', label), node('span', '', text)); content.append(detail); } });
-    const edit = node('button', 'entry-edit'); edit.append(icon('edit')); edit.setAttribute('aria-label', '编辑“' + (entry.title || '学习记录') + '”'); edit.title = '查看与编辑'; edit.addEventListener('click', () => openEntry(entry)); card.append(date, content, edit); list.append(card);
+  $('#entries-count').textContent='共 '+number(state.entryTotal)+' 篇'+(filtered?'匹配记录':'学习记录');
+  const list=$('#entries-list');disposeEntryList();list.replaceChildren();
+  if(!state.entries.length){list.append(emptyState('还没有找到学习足迹','可以记录一条，或调整筛选条件。'));return;}
+  state.entries.forEach(entry=>{
+    const card=node('article','entry-card');const date=node('div','entry-date');date.append(node('strong','',entry.date.slice(8)),node('span','',entry.date.slice(0,7)));
+    const content=node('div','entry-content');content.append(node('h2','',entry.title),node('span','subject-badge',entry.subject));
+    const excerpt=node('p','entry-excerpt',entry.content.replace(/!\[[^\]]*\]\([^)]*\)/g,'[图片]').slice(0,180)+'…');content.append(excerpt);
+    const full=node('div','markdown-body entry-prose');full.hidden=true;content.append(full);
+    const actions=node('div','work-actions');const expand=workButton('展开全文',async()=>{if(!full.hidden){full.hidden=true;excerpt.hidden=false;expand.textContent='展开全文';return;}expand.disabled=true;try{const item=await api('/api/entries/'+encodeURIComponent(entry.id));renderMarkdown(full,item.content+(item.reflection?'\n\n### 收获与思考\n'+item.reflection:'')+(item.next?'\n\n### 下一步\n'+item.next:''));full.hidden=false;excerpt.hidden=true;expand.textContent='收起';}catch(e){workError(e);}finally{expand.disabled=false;}},'text-button');
+    actions.append(expand,workButton('编辑与关联',()=>openResource('entry',entry.id),'text-button'));content.append(actions);card.append(date,content);list.append(card);
   });
 }
 function clearFilters() { ['#log-query', '#filter-subject', '#filter-from', '#filter-to'].forEach(selector => $(selector).value = ''); loadEntries(); }
 function openEntry(entry = null) {
-  const form = $('#entry-form'); form.reset(); state.editingId = entry?.id ?? null;
+  const form = $('#entry-form'); form.reset(); state.editingId = entry?.id ?? null; state.draftKey = 'entry:'+(entry?.id || crypto.randomUUID()); state.entryUpdated=entry?.updated_at||''; work.noteOrigin=null;
   ['title', 'date', 'subject', 'content', 'reflection', 'next', 'mood'].forEach(key => { const field = form.elements.namedItem(key); const value = entry?.[key] ?? (key === 'date' ? today() : key === 'mood' ? 'okay' : ''); if (key === 'mood' && value && ![...field.options].some(option => option.value === value)) { const option = node('option', '', value); option.value = value; field.append(option); } field.value = value; });
   $('#entry-dialog-title').textContent = entry ? '编辑这段学习足迹' : '记下今天的学习'; $('#delete-entry').hidden = !entry; $('#entry-error').hidden = true;
   entryBaseline = entrySnapshot(); setEntryMode(false);
-  $('#entry-dialog').showModal();
+  $('#entry-dialog').showModal(); showRelations('entry',state.editingId,$('#entry-relations'));
 }
-function closeEntry() { if (state.saving || assetUploads) return; if (entrySnapshot() !== entryBaseline && !window.confirm('这条日志还有未保存的修改，确定放弃吗？')) return; $('#entry-dialog').close(); window.StudyMarkdown?.dispose($('#entry-preview')); }
+function closeEntry() { if (state.saving || assetUploads) return; if (entrySnapshot() !== entryBaseline && !window.confirm('这条日志还有未保存的修改，关闭后可从草稿恢复。确定关闭吗？')) return; $('#entry-dialog').close(); window.StudyMarkdown?.dispose($('#entry-preview')); }
 async function saveEntry(event) {
   event.preventDefault(); if (state.saving || assetUploads) return;
   setEntryMode(false);
   const form = $('#entry-form'); if (!form.reportValidity()) return;
   const values = Object.fromEntries(new FormData(form).entries());
   state.saving = true; form.inert = true; $('#save-entry').disabled = true; $('#delete-entry').disabled = true; $('#entry-error').hidden = true;
-  try { await api(state.editingId === null ? '/api/entries' : '/api/entries/' + encodeURIComponent(state.editingId), { method: state.editingId === null ? 'POST' : 'PATCH', body: values }); $('#entry-dialog').close(); window.StudyMarkdown?.dispose($('#entry-preview')); notify(state.editingId === null ? '这份学习收获，已经好好存下来了。' : '学习记录已更新。'); await Promise.allSettled([loadEntries(), loadSummary()]); }
+  try { await api(state.editingId === null && work.noteOrigin ? '/api/linked-notes' : state.editingId === null ? '/api/entries' : '/api/entries/' + encodeURIComponent(state.editingId), { method: state.editingId === null ? 'POST' : 'PATCH', body: state.editingId === null && work.noteOrigin ? {kind:'entry',origin_kind:work.noteOrigin.kind,origin_id:work.noteOrigin.id,data:values} : values }); clearDraft('entry'); work.noteOrigin=null; $('#entry-dialog').close(); window.StudyMarkdown?.dispose($('#entry-preview')); notify(state.editingId === null ? '这份学习收获，已经好好存下来了。' : '学习记录已更新。'); await Promise.allSettled([loadEntries(), loadSummary()]); }
   catch (error) { $('#entry-error').textContent = error.message; $('#entry-error').hidden = false; }
   finally { state.saving = false; form.inert = false; $('#save-entry').disabled = false; $('#delete-entry').disabled = false; }
 }
 async function deleteEntry() {
   if (state.editingId === null || state.saving || assetUploads) return;
-  if (!window.confirm('确定删除这条学习记录吗？删除后无法撤销，建议先导出备份。')) return;
+  if (!window.confirm('确定删除这条学习记录吗？将移入回收站，可随时恢复。')) return;
   state.saving = true; $('#entry-form').inert = true; $('#delete-entry').disabled = true; $('#save-entry').disabled = true;
-  try { await api('/api/entries/' + encodeURIComponent(state.editingId), { method: 'DELETE' }); $('#entry-dialog').close(); window.StudyMarkdown?.dispose($('#entry-preview')); notify('这条学习记录已删除。'); await Promise.allSettled([loadEntries(), loadSummary()]); }
+  try { await api('/api/entries/' + encodeURIComponent(state.editingId), { method: 'DELETE' }); $('#entry-dialog').close(); window.StudyMarkdown?.dispose($('#entry-preview')); clearDraft('entry'); notify('这条学习记录已移入回收站。'); await Promise.allSettled([loadEntries(), loadSummary()]); }
   catch (error) { $('#entry-error').textContent = error.message; $('#entry-error').hidden = false; }
   finally { state.saving = false; $('#entry-form').inert = false; $('#delete-entry').disabled = false; $('#save-entry').disabled = false; }
 }
@@ -336,7 +345,7 @@ function documentDirty() { return library.selected !== null && documentSnapshot(
 function canLeaveDocument() {
   if (library.saving || assetUploads) { notify('正在保存，请稍候。'); return false; }
   if (!documentDirty()) return true;
-  if (!window.confirm('这份 Markdown 文件还有未保存的修改，确定放弃吗？')) return false;
+  if (!window.confirm('这份 Markdown 文件还有未保存的修改，关闭后可从草稿恢复。确定关闭吗？')) return false;
   const previous = JSON.parse(library.baseline); $('#document-name').value = previous.name; $('#document-content').value = previous.content;
   updateDocumentStatus(); if (!library.editing) renderMarkdown($('#document-preview'), previous.content); return true;
 }
@@ -349,7 +358,7 @@ function setDocumentMode(editing) {
   library.editing = editing; $('#document-edit-area').hidden = !editing; $('#document-preview').hidden = editing;
   $('#document-read-tab').classList.toggle('active', !editing); $('#document-edit-tab').classList.toggle('active', editing);
   $('#document-read-tab').setAttribute('aria-pressed', String(!editing)); $('#document-edit-tab').setAttribute('aria-pressed', String(editing));
-  if (!editing) { renderMarkdown($('#document-preview'), $('#document-content').value); if (!$('#document-content').value.trim()) $('#document-preview').append(node('p', 'preview-placeholder', '这份笔记还是空白，点击“编辑”开始记录。')); }
+  if (!editing) { renderMarkdown($('#document-preview'), $('#document-content').value); decorateDocument(); if (!$('#document-content').value.trim()) $('#document-preview').append(node('p', 'preview-placeholder', '这份笔记还是空白，点击“编辑”开始记录。')); }
 }
 function humanSize(size) { return size < 1024 ? size + ' B' : size < 1024 * 1024 ? (size / 1024).toFixed(1) + ' KB' : (size / 1024 / 1024).toFixed(1) + ' MB'; }
 function documentDate(value) { const date = new Date(value); return Number.isNaN(date.getTime()) ? '' : new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(date); }
@@ -390,12 +399,12 @@ async function openDocumentFile(action) {
   finally { documentFileOpening = false; updateDocumentFileButtons(); }
 }
 function displayDocument(doc, editing = false) {
-  library.selected = doc; $('#document-empty').hidden = true; $('#document-open').hidden = false;
+  library.draftKey='document:'+(doc.id||crypto.randomUUID()); work.noteOrigin=null; library.selected = doc; $('#document-empty').hidden = true; $('#document-open').hidden = false;
   $('#document-name').value = doc.name || '未命名笔记.md'; $('#document-content').value = doc.content || '';
   $('#document-title').textContent = doc.name || '未命名笔记.md';
   $('#document-meta').textContent = doc.id ? humanSize(doc.size || 0) + ' · 更新于 ' + documentDate(doc.updated_at) : '本地笔记 · 支持图文排版';
   $('#download-document').disabled = !doc.id; $('#delete-document').hidden = !doc.id; $('#document-error').hidden = true;
-  library.baseline = documentSnapshot(); updateDocumentStatus(); setDocumentMode(editing); renderDocumentList(); loadDocumentFiles(doc.id);
+  library.baseline = documentSnapshot(); updateDocumentStatus(); setDocumentMode(editing); renderDocumentList(); loadDocumentFiles(doc.id); showRelations('document',doc.id,$('#document-relations')); decorateDocument(); loadReadingPosition(doc.id);
 }
 async function loadDocuments() {
   const sequence = ++library.sequence; const query = $('#document-query').value.trim();
@@ -426,9 +435,10 @@ async function saveDocument() {
   library.saving = true; updateUploadControls(); updateDocumentStatus(); $('#document-error').hidden = true;
   const id = library.selected.id; const snapshot = documentSnapshot();
   try {
-    const doc = await api(id ? '/api/documents/' + encodeURIComponent(id) : '/api/documents', { method: id ? 'PATCH' : 'POST', body: { name, content } });
+    const oldDraftKey=library.draftKey; const origin=work.noteOrigin; const doc = await api(!id && origin ? '/api/linked-notes' : id ? '/api/documents/' + encodeURIComponent(id) : '/api/documents', { method: id ? 'PATCH' : 'POST', body: !id && origin ? {kind:'document',origin_kind:origin.kind,origin_id:origin.id,data:{name,content}} : { name, content } });
+    if (documentSnapshot() === snapshot) clearDraft('document',oldDraftKey); work.noteOrigin=null;
     if (documentSnapshot() === snapshot) displayDocument(doc, library.editing);
-    else { library.selected = doc; library.baseline = JSON.stringify({ name, content }); $('#document-title').textContent = doc.name; $('#download-document').disabled = false; $('#delete-document').hidden = false; loadDocumentFiles(doc.id); }
+    else { library.selected = doc; library.baseline = JSON.stringify({ name, content }); library.draftKey='document:'+doc.id; clearDraft('document',oldDraftKey); draftChanged('document'); $('#document-title').textContent = doc.name; $('#download-document').disabled = false; $('#delete-document').hidden = false; loadDocumentFiles(doc.id); }
     await loadDocuments(); notify(doc.file_warning || 'Markdown 文件及源文件已保存。', Boolean(doc.file_warning));
   } catch (error) { $('#document-error').textContent = error.message; $('#document-error').hidden = false; }
   finally { library.saving = false; updateUploadControls(); updateDocumentStatus(); }
@@ -454,9 +464,9 @@ async function downloadDocument() {
 }
 async function deleteDocument() {
   if (!library.selected?.id || library.saving || assetUploads) return;
-  if (!window.confirm('确定删除“' + library.selected.name + '”吗？删除后无法撤销。')) return;
+  if (!window.confirm('确定删除“' + library.selected.name + '”吗？将移入回收站，可随时恢复。')) return;
   library.saving = true; updateUploadControls();
-  try { await api('/api/documents/' + encodeURIComponent(library.selected.id), { method: 'DELETE' }); library.selected = null; library.baseline = ''; loadDocumentFiles(null); window.StudyMarkdown?.dispose($('#document-preview')); $('#document-empty').hidden = false; $('#document-open').hidden = true; await loadDocuments(); notify('Markdown 文件已删除。'); }
+  try { await api('/api/documents/' + encodeURIComponent(library.selected.id), { method: 'DELETE' }); library.selected = null; library.baseline = ''; loadDocumentFiles(null); window.StudyMarkdown?.dispose($('#document-preview')); $('#document-empty').hidden = false; $('#document-open').hidden = true; await loadDocuments(); clearDraft('document'); notify('文档已移入回收站。'); }
   catch (error) { notify(error.message, true); }
   finally { library.saving = false; updateUploadControls(); }
 }
@@ -514,13 +524,16 @@ $('#document-name').addEventListener('input', updateDocumentStatus);
 $('#document-content').addEventListener('input', updateDocumentStatus);
 let documentSearchTimer;
 $('#document-query').addEventListener('input', () => { clearTimeout(documentSearchTimer); documentSearchTimer = setTimeout(loadDocuments, 250); });
-window.addEventListener('beforeunload', event => { if (documentDirty() || ($('#entry-dialog').open && entrySnapshot() !== entryBaseline) || assetUploads) { event.preventDefault(); event.returnValue = ''; } });
+window.addEventListener('beforeunload', event => { if (work.restoring) return; if (documentDirty() || ($('#entry-dialog').open && entrySnapshot() !== entryBaseline) || assetUploads) { event.preventDefault(); event.returnValue = ''; } });
 window.addEventListener('keydown', event => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') { if ($('#entry-dialog').open) { event.preventDefault(); $('#entry-form').requestSubmit(); } else if (state.view === 'documents' && library.selected) { event.preventDefault(); saveDocument(); } } });
 window.addEventListener('focus', () => { if (state.view === 'documents' && library.selected?.id && !library.saving && !documentDirty()) loadDocumentFiles(library.selected.id); });
-window.addEventListener('hashchange', () => setView(location.hash.slice(1), false));
+window.addEventListener('hashchange', routeHash);
 $('#today-date').textContent = new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', month: 'long', day: 'numeric', weekday: 'long' }).format(new Date());
+setupWorkspace();
 setupFuture();
-setView(location.hash.slice(1) || 'chat', false);
+$('#entries-prev').onclick=()=>{state.entryOffset=Math.max(0,(state.entryOffset||0)-20);loadEntries(false);};
+$('#entries-next').onclick=()=>{state.entryOffset=(state.entryOffset||0)+20;loadEntries(false);};
+routeHash();
 renderCharts({ days: [], subjects: [] });
 updateConnectionUI();
 refreshData();

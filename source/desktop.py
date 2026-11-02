@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from urllib.parse import quote
 import sys
 import threading
 import time
@@ -233,6 +234,21 @@ def run_smoke_test(data_dir, report_path):
         assert request("/api/documents/" + document["id"])["content"].startswith("# 图文笔记")
         assert request("/api/documents/" + document["id"] + "/download", raw=True).decode("utf-8").startswith("# 图文笔记")
         checks.append("image_and_markdown_library")
+        assert request('/workspace.js', raw=True)
+        assert request('/workspace.css', raw=True)
+        assert request('/api/search?query=' + quote('图文笔记'))['total'] == 1
+        assert request('/api/entries-page?limit=20')['total'] == 1
+        request('/api/links', 'POST', {'a_kind':'entry','a_id':entry['id'],'b_kind':'document','b_id':document['id']})
+        assert len(request('/api/links?kind=entry&id='+entry['id'])['items']) == 1
+        request('/api/drafts/entry%3Asmoke', 'POST', {'kind':'entry','data':{'content':'未完成草稿'}})
+        assert request('/api/drafts')['items']
+        request('/api/entries/'+entry['id'], 'DELETE')
+        deleted=request('/api/trash')['items'][0]
+        request('/api/trash/'+deleted['id']+'/restore', 'POST', {})
+        backup=request('/api/backups', 'POST', {})
+        assert request('/api/backups/'+backup['id']+'/download', raw=True).startswith(b'PK')
+        checks.append('workspace_search_links_drafts_trash_backup')
+
         backend.close()
         backend = DesktopServer(data_dir, token, preferred_port=0).start()
         assert request("/api/entries/" + entry["id"])["minutes"] is None
