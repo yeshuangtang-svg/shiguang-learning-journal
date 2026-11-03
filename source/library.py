@@ -173,12 +173,12 @@ class LibraryMixin:
                                       " ORDER BY updated_at DESC, id DESC", values).fetchall()
         return [dict(row) for row in rows]
 
-    def create_document(self, raw):
+    def create_document(self, raw, *, identity=None):
         from store import _now, _object
         _object(raw, {"name", "content"})
         name = filename(raw.get("name"), markdown=True)
         content, size = document_content(raw.get("content"))
-        identity, now = uuid.uuid4().hex, _now()
+        identity, now = resource_id(identity) if identity is not None else uuid.uuid4().hex, _now()
         with self._connection() as connection:
             connection.execute("INSERT INTO documents VALUES (?, ?, ?, ?, ?, ?)",
                                (identity, name, content, size, now, now))

@@ -45,7 +45,7 @@ class Backups:
                         if path.is_symlink() or not path.resolve().is_relative_to(self.data) or path.name.endswith('.tmp'): continue
                         if path.is_file(): records[path.relative_to(self.data).as_posix()]=path
             if include_config and (self.data/'config.json').is_file(): records['config.json']=self.data/'config.json'
-            manifest={'format':'shiguang-full-backup','version':1,'app_version':'1.5.0','created_at':stamp,'includes_config':include_config,'files':{}}
+            manifest={'format':'shiguang-full-backup','version':1,'app_version':'1.6.0','created_at':stamp,'includes_config':include_config,'files':{}}
             total=0
             with zipfile.ZipFile(target,'w',zipfile.ZIP_DEFLATED) as archive:
                 for name,path in records.items():

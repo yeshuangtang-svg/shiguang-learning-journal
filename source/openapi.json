@@ -2,7 +2,7 @@
   "openapi": "3.0.3",
   "info": {
     "title": "拾光学习日志 Agent API",
-    "version": "1.5.0",
+    "version": "1.6.0",
     "description": "对话学习日志 Agent：记录问题、知识点、解决过程与收获，无需学习时长。令牌仅在服务配置 AGENT_API_TOKEN 时必需。重试使用相同 request_id。"
   },
   "servers": [
@@ -1370,6 +1370,20 @@
                     "type": "string",
                     "format": "password",
                     "writeOnly": true
+                  },
+                  "reasoning_effort": {
+                    "type": "string",
+                    "enum": [
+                      "default",
+                      "none",
+                      "minimal",
+                      "low",
+                      "medium",
+                      "high",
+                      "xhigh",
+                      "max"
+                    ],
+                    "description": "default 不传参数；可单独保存。官方已知模型按支持档位校验；更换模型或地址且未传此字段时重置为 default。"
                   }
                 },
                 "additionalProperties": false
@@ -2962,6 +2976,77 @@
                 "description": "最大 512 MiB，解压总量最大 2 GiB；不改变当前资料"
               }
             }
+          }
+        }
+      }
+    },
+    "/api/config/models": {
+      "post": {
+        "summary": "校验待保存的 API 连接并获取模型，不保存配置、不调用对话",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "base_url": {
+                    "type": "string"
+                  },
+                  "api_key": {
+                    "type": "string",
+                    "description": "同地址留空保留已存密钥；更换地址需重新填写"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "模型列表；404/405 回退允许手填，但 verified=false",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "models": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "verified": {
+                      "type": "boolean",
+                      "description": "仅表示模型列表接口有效响应，不代表模型支持对话及工具调用"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "配置无效"
+          },
+          "401": {
+            "description": "本机访问令牌无效"
+          },
+          "502": {
+            "description": "上游连接、鉴权或响应格式错误"
+          }
+        }
+      }
+    },
+    "/api/skills": {
+      "get": {
+        "summary": "获取已安装的助手技能（名称与说明）",
+        "responses": {
+          "200": {
+            "description": "内置技能列表"
           }
         }
       }

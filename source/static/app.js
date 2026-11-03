@@ -3,6 +3,10 @@
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const state = { health: null, config: null, entries: [], summary: null, sending: false, saving: false, sessionId: '', failedRequest: null, editingId: null, filterSequence: 0, view: 'chat' };
+let configCheckSequence = 0;
+let configReady = false;
+let configSaving = false;
+const reasoningLabels = { default: '跟随模型默认', none: '不额外推理（none）', minimal: '极低（minimal）', low: '低（low）', medium: '中（medium）', high: '高（high）', xhigh: '很高（xhigh）', max: '最高（max）' };
 const library = { documents: [], selected: null, baseline: '', editing: false, saving: false, importing: false, sequence: 0, opening: 0 };
 let entryBaseline = '', entryPreview = false, imageTarget = 'entry', assetUploads = 0;
 const SESSION_KEY = 'shiguang.agent.session';
@@ -98,6 +102,8 @@ async function loadConfig() {
     const overrideLabels = { LLM_BASE_URL: '接口地址', LLM_MODEL: '模型', LLM_API_KEY: '密钥' };
     [['LLM_BASE_URL', '#config-base-url'], ['LLM_MODEL', '#config-model'], ['LLM_API_KEY', '#config-api-key']].forEach(([key, selector]) => { $(selector).readOnly = overrides.includes(key); $(selector).title = overrides.includes(key) ? '由服务器环境变量指定，请修改服务器启动环境。' : ''; });
     $('#config-save-status').textContent = overrides.length ? overrides.map(key => overrideLabels[key] || key).join('、') + '由服务器环境变量指定；请修改启动环境后重启服务。' : '';
+    resetConfigCheck();
+    renderReasoningConfig(config);
   } catch (error) { if (error.status !== 401) $('#config-save-status').textContent = error.message; }
 }
 
@@ -115,6 +121,15 @@ function appendMessage(role, content, options = {}) {
       const tool = String(action.tool || '');
       let label = '已完成操作';
       if (action.ok === false) label = '操作未完成';
+      else if (tool === 'load_skill') label = '已加载技能';
+      else if (tool === 'create_flow_diagram') label = '流程图已生成';
+      else if (tool === 'create_architecture_diagram') label = '架构图已生成';
+      else if (tool === 'create_matrix_diagram') label = '矩阵图已生成';
+      else if (tool === 'create_tensor_diagram') label = '张量图已生成';
+      else if (tool === 'create_data_chart') label = '数据图表已生成';
+      else if (['create_document', 'update_document'].includes(tool)) label = action.result?.md_exists ? 'MD 文件已保存' : '正文已入库，文件待同步';
+      else if (tool === 'generate_document_pdf') label = action.result?.pdf_current ? 'PDF 已生成' : 'PDF 待更新';
+      else if (tool === 'document_files') label = '已核对文档文件';
       else if (/create|add|save|record/i.test(tool)) label = '学习日志已保存';
       else if (/update|edit|patch/i.test(tool)) label = '日志已更新';
       else if (/delete|remove/i.test(tool)) label = '日志已删除';
@@ -123,7 +138,7 @@ function appendMessage(role, content, options = {}) {
       const badge = node('span', 'action-badge', label); badge.title = tool; actions.append(badge);
     });
     main.append(actions);
-    const sources = new Map(); (options.actions || []).filter(a => a.ok && ['search_knowledge','read_knowledge'].includes(a.tool)).forEach(a => { (a.result.items || [a.result]).forEach(r => { if (r.url && r.title) sources.set(r.url,r); }); });
+    const sources = new Map(); (options.actions || []).filter(a => a.ok && ['search_knowledge','read_knowledge','create_document','update_document','generate_document_pdf','document_files'].includes(a.tool)).forEach(a => { (a.result.items || [a.result]).forEach(r => { if (r.url && r.title) sources.set(r.url,r); }); });
     if (sources.size) { const refs = node('div','source-list'); refs.append(node('small','','参考资料')); [...sources.values()].slice(0,10).forEach(r => refs.append(sourceLink(r))); main.append(refs); }
   }
   (options.warnings || []).forEach(warning => main.append(node('div', 'message-warning', typeof warning === 'string' ? warning : JSON.stringify(warning))));
@@ -162,7 +177,7 @@ async function sendMessage(event) {
     thinking.remove(); clearDraft('chat');
     if (result.session_id) { state.sessionId = String(result.session_id); writeStorage(localStorage, SESSION_KEY, state.sessionId); }
     appendMessage('assistant', result.reply || '已完成。', { actions: result.actions, warnings: result.warnings });
-    await Promise.allSettled([loadSummary(), state.view === 'logs' ? loadEntries() : Promise.resolve()]);
+    await Promise.allSettled([loadSummary(), loadDocuments(), state.view === 'logs' ? loadEntries() : Promise.resolve()]);
   } catch (error) {
     thinking.remove(); state.failedRequest = payload;
     appendMessage('assistant', error.message + '\n原消息已放回输入框，点击发送可重试。', { error: true });
@@ -252,13 +267,91 @@ async function deleteEntry() {
   finally { state.saving = false; $('#entry-form').inert = false; $('#delete-entry').disabled = false; $('#save-entry').disabled = false; }
 }
 
-async function saveConfig(event) {
-  event.preventDefault(); $('#save-config').disabled = true; $('#config-save-status').textContent = '正在保存…';
-  const payload = { base_url: $('#config-base-url').value.trim(), model: $('#config-model').value.trim() };
+function configCredentials() {
+  const payload = { base_url: $('#config-base-url').value.trim() };
   const key = $('#config-api-key').value.trim(); if (key) payload.api_key = key;
-  try { await api('/api/config', { method: 'POST', body: payload }); $('#config-api-key').value = ''; await Promise.allSettled([loadConfig(), loadHealth()]); notify('连接设置已保存。发一条消息，开始记录吧。'); if (!state.config?.environment_overrides?.length) $('#config-save-status').textContent = '已保存；实际连接将在发送消息时验证。'; }
+  return payload;
+}
+function renderReasoningConfig(config) {
+  const select = $('#config-reasoning-effort');
+  select.replaceChildren(...(config.reasoning_options || ['default']).map(value => new Option(reasoningLabels[value] || value, value)));
+  select.value = config.reasoning_effort || 'default';
+  if (!select.value) select.value = 'default';
+  select.disabled = !config.model;
+  $('#save-reasoning').disabled = !config.model;
+  $('#reasoning-model').textContent = config.model || '先保存模型';
+  $('#reasoning-hint').textContent = config.model ? config.reasoning_hint : '先保存连接设置，再选择推理强度。';
+  $('#reasoning-save-status').textContent = config.model ? '当前：' + reasoningLabels[config.reasoning_effort || 'default'] : '';
+}
+async function saveReasoning(event) {
+  event.preventDefault();
+  if (!state.config?.model) return;
+  $('#reasoning-form').inert = true;
+  $('#reasoning-save-status').textContent = '正在保存…';
+  try {
+    const config = await api('/api/config', { method: 'POST', body: { reasoning_effort: $('#config-reasoning-effort').value } });
+    state.config = config; renderReasoningConfig(config);
+    $('#reasoning-save-status').textContent = '已保存，下次模型请求使用此设置。';
+    notify('推理强度已保存。');
+  } catch (error) { $('#reasoning-save-status').textContent = error.message; }
+  finally { $('#reasoning-form').inert = false; }
+}
+function resetConfigCheck() {
+  configCheckSequence++; configReady = false;
+  $('#config-model-step').hidden = true;
+  $('#config-model-select').replaceChildren(new Option('请选择模型', ''));
+  $('#check-config').disabled = false;
+  $('#check-config').textContent = '校验连接并获取模型';
+  $('#save-config').disabled = true;
+  $('#config-check-status').textContent = '填写后先校验，再选择模型。';
+}
+function selectedConfigModel() {
+  return ($('#config-manual-model').checked ? $('#config-model').value : $('#config-model-select').value).trim();
+}
+function updateModelChoice() {
+  const manual = $('#config-manual-model').checked;
+  $('#config-model-manual-label').hidden = !manual;
+  $('#config-model-select-label').hidden = manual;
+  $('#save-config').disabled = configSaving || !configReady || !selectedConfigModel();
+}
+async function checkConfig() {
+  if (!$('#config-base-url').reportValidity()) return;
+  resetConfigCheck();
+  const sequence = configCheckSequence;
+  $('#check-config').disabled = true;
+  $('#check-config').textContent = '正在校验…';
+  $('#config-check-status').textContent = '正在连接 API 并读取模型列表…';
+  try {
+    const result = await api('/api/config/models', { method: 'POST', body: configCredentials() });
+    if (sequence !== configCheckSequence) return;
+    const models = result.models || [];
+    models.forEach(id => $('#config-model-select').add(new Option(id, id)));
+    const current = $('#config-model').value.trim();
+    const locked = state.config?.environment_overrides?.includes('LLM_MODEL');
+    $('#config-model-select').value = models.includes(current) ? current : '';
+    $('#config-manual-model').checked = locked || !models.length;
+    $('#config-manual-model').disabled = Boolean(locked);
+    $('#config-model-step').hidden = false;
+    $('#config-check-status').textContent = result.message;
+    configReady = true; updateModelChoice();
+  } catch (error) {
+    if (sequence === configCheckSequence) $('#config-check-status').textContent = error.message;
+  } finally {
+    if (sequence === configCheckSequence) {
+      $('#check-config').disabled = false;
+      $('#check-config').textContent = '重新校验并获取模型';
+    }
+  }
+}
+async function saveConfig(event) {
+  event.preventDefault();
+  if (!configReady || configSaving || !selectedConfigModel()) return;
+  configSaving = true; $('#config-form').inert = true;
+  $('#save-config').disabled = true; $('#config-save-status').textContent = '正在保存…';
+  const payload = { ...configCredentials(), model: selectedConfigModel() };
+  try { await api('/api/config', { method: 'POST', body: payload }); $('#config-api-key').value = ''; await Promise.allSettled([loadConfig(), loadHealth()]); notify('连接设置已保存。'); if (!state.config?.environment_overrides?.length) $('#config-save-status').textContent = '已保存；对话及工具调用能力将在首次对话时验证。'; }
   catch (error) { $('#config-save-status').textContent = error.message; notify(error.message, true); }
-  finally { $('#save-config').disabled = false; }
+  finally { configSaving = false; $('#config-form').inert = false; updateModelChoice(); }
 }
 async function applyToken(event) {
   event.preventDefault(); const input = $('#access-token').value.trim();
@@ -267,7 +360,19 @@ async function applyToken(event) {
   try { await api('/api/config'); writeStorage(sessionStorage, TOKEN_KEY, token); $('#access-token').value = ''; await refreshData(); notify('浏览器访问令牌已应用。'); }
   catch (error) { token = previous; updateConnectionUI(); notify(error.message, true); }
 }
-async function refreshData() { await loadHealth(); await Promise.allSettled([loadConfig(), loadSummary(), loadEntries(), loadSession(), loadDocuments(), loadFuture()]); if (library.selected) renderMarkdown($('#document-preview'), $('#document-content').value); updateConnectionUI(); }
+async function loadSkills() {
+  const container = $('#installed-skills');
+  try {
+    const result = await api('/api/skills');
+    container.replaceChildren();
+    result.skills.forEach(skill => {
+      const item = node('div', 'installed-skill');
+      item.append(node('strong', '', skill.description.split('：')[0]), node('p', '', skill.description.split('：').slice(1).join('：')));
+      container.append(item);
+    });
+  } catch (error) { container.textContent = '技能列表暂时无法读取：' + error.message; }
+}
+async function refreshData() { await loadHealth(); await Promise.allSettled([loadConfig(), loadSkills(), loadSummary(), loadEntries(), loadSession(), loadDocuments(), loadFuture()]); if (library.selected) renderMarkdown($('#document-preview'), $('#document-content').value); updateConnectionUI(); }
 async function exportBackup() {
   try { const data = await api('/api/export'); const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })); const anchor = node('a'); anchor.href = url; anchor.download = '拾光-学习日志-' + today() + '.json'; document.body.append(anchor); anchor.click(); anchor.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000); notify('学习日志备份已导出。'); }
   catch (error) { notify(error.message, true); if (error.status === 401) setView('settings'); }
@@ -487,6 +592,12 @@ $('#cancel-entry').addEventListener('click', closeEntry);
 $('#entry-dialog').addEventListener('cancel', event => { event.preventDefault(); closeEntry(); });
 $('#delete-entry').addEventListener('click', deleteEntry);
 $('#config-form').addEventListener('submit', saveConfig);
+$('#reasoning-form').addEventListener('submit', saveReasoning);
+$('#check-config').addEventListener('click', checkConfig);
+['#config-base-url', '#config-api-key'].forEach(selector => $(selector).addEventListener('input', resetConfigCheck));
+$('#config-model-select').addEventListener('change', updateModelChoice);
+$('#config-manual-model').addEventListener('change', updateModelChoice);
+$('#config-model').addEventListener('input', updateModelChoice);
 $('#token-form').addEventListener('submit', applyToken);
 $('#clear-token').addEventListener('click', async () => { token = ''; writeStorage(sessionStorage, TOKEN_KEY, ''); $('#access-token').value = ''; await refreshData(); notify('浏览器访问令牌已清除。'); });
 $('#clear-filters').addEventListener('click', clearFilters);

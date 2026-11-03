@@ -35,6 +35,16 @@ class FakeProvider(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
+    def do_GET(self):
+        self.server.requests.append({"path": self.path, "authorization": self.headers.get("Authorization")})
+        status, body = self.server.responses.popleft()
+        data = json.dumps(body, ensure_ascii=False).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
     def do_POST(self):
         payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         self.server.requests.append({"path": self.path, "payload": payload, "authorization": self.headers.get("Authorization")})
@@ -92,6 +102,145 @@ class AgentHTTPChecks(unittest.TestCase):
             response = error
         with response:
             return response.status, json.loads(response.read())
+
+    def test_model_discovery_uses_draft_without_saving_or_leaking_key(self):
+        original = self.app.config.path.read_bytes()
+        self.provider.responses.append((200, {"data": [{"id": "z-model"}, {"id": "a-model"}, {"id": "z-model"}, {"id": None}]}))
+        status, result = self.request("POST", "/api/config/models", {"api_key": "draft-key"})
+        self.assertEqual(status, 200)
+        self.assertEqual(result["models"], ["a-model", "z-model"])
+        self.assertTrue(result["verified"])
+        self.assertNotIn("draft-key", json.dumps(result))
+        self.assertEqual(self.provider.requests[-1]["path"], "/v1/models")
+        self.assertEqual(self.provider.requests[-1]["authorization"], "Bearer draft-key")
+        self.assertEqual(self.app.config.path.read_bytes(), original)
+        self.provider.responses.append((200, {"data": []}))
+        status, result = self.request("POST", "/api/config/models", {"api_key": ""})
+        self.assertEqual(status, 200)
+        self.assertEqual(result["models"], [])
+        self.assertEqual(self.provider.requests[-1]["authorization"], "Bearer test-provider-key-not-real")
+
+    def test_discovery_errors_and_unsupported_listing(self):
+        original = self.app.config.path.read_bytes()
+        for code in (401, 403, 429, 500, 302):
+            with self.subTest(code=code):
+                self.provider.responses.append((code, {"error": "SECRET must not be echoed"}))
+                status, result = self.request("POST", "/api/config/models", {})
+                self.assertEqual(status, 502)
+                self.assertNotIn("SECRET", json.dumps(result))
+        for code in (404, 405):
+            self.provider.responses.append((code, {}))
+            status, result = self.request("POST", "/api/config/models", {})
+            self.assertEqual(status, 200)
+            self.assertFalse(result["verified"])
+            self.assertEqual(result["models"], [])
+        self.provider.responses.append((200, {"data": "bad list"}))
+        self.assertEqual(self.request("POST", "/api/config/models", {})[0], 502)
+        self.assertEqual(self.app.config.path.read_bytes(), original)
+
+    def test_discovery_access_validation_and_credential_destination(self):
+        self.assertEqual(self.request("POST", "/api/config/models", {}, authenticated=False)[0], 401)
+        for values in ({"base_url": "https://different.example/v1"}, {"base_url": "file:///tmp"}, {"api_key": 12}, {"other": 1}):
+            self.assertEqual(self.request("POST", "/api/config/models", values)[0], 400)
+        self.assertEqual(self.provider.requests, [])
+        with patch.dict(os.environ, {"LLM_BASE_URL": self.app.config.read()["base_url"], "LLM_API_KEY": "env-key"}):
+            self.provider.responses.append((200, {"data": [{"id": "env-model"}]}))
+            status, result = self.request("POST", "/api/config/models", {"base_url": "https://ignored.example/v1", "api_key": "ignored-key"})
+            self.assertEqual(status, 200)
+            self.assertEqual(self.provider.requests[-1]["authorization"], "Bearer env-key")
+
+    def test_responses_tool_loop_replays_reasoning_and_persists_session(self):
+        output = [
+            {"id": "rs_1", "type": "reasoning", "summary": [], "encrypted_content": "opaque-test-reasoning"},
+            {"id": "fc_1", "type": "function_call", "call_id": "call_response_1", "name": "create_entry", "arguments": json.dumps(ENTRY)},
+        ]
+        self.provider.responses.append((200, {"status": "completed", "output": output}))
+        self.provider.responses.append((200, {"status": "completed", "output": [{"id": "msg_1", "type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "已保存。"}]}]}))
+        with patch.object(agent.ModelClient, "uses_responses", return_value=True):
+            status, result = self.request("POST", "/api/chat", {"message": "记录 HTTP 练习", "request_id": "responses-tool-loop"})
+            self.assertEqual(status, 200)
+            self.assertEqual(result["reply"], "已保存。")
+            self.assertTrue(result["actions"][0]["ok"])
+            self.assertEqual(len(self.app.store.list_entries()), 1)
+            first, second = self.provider.requests
+            self.assertEqual(first["path"], "/v1/responses")
+            self.assertFalse(first["payload"]["store"])
+            self.assertIn("reasoning.encrypted_content", first["payload"]["include"])
+            self.assertIn("create_entry", [tool["name"] for tool in first["payload"]["tools"]])
+            self.assertFalse(first["payload"]["tools"][0]["strict"])
+            items = second["payload"]["input"]
+            self.assertEqual(items[2:4], output)
+            self.assertEqual(items[4]["type"], "function_call_output")
+            self.assertEqual(items[4]["call_id"], "call_response_1")
+            self.provider.responses.append((200, {"status": "completed", "output": [{"type": "message", "content": [{"type": "output_text", "text": "欢迎继续。"}]}]}))
+            status, followup = self.request("POST", "/api/chat", {"message": "谢谢", "session_id": result["session_id"]})
+            self.assertEqual(status, 200)
+            self.assertIn(output[0], self.provider.requests[-1]["payload"]["input"])
+            visible = self.request("GET", "/api/sessions/" + result["session_id"])[1]
+            self.assertNotIn("encrypted_content", json.dumps(visible))
+
+    def test_responses_routing_legacy_history_and_incomplete_reply(self):
+        self.assertTrue(agent.ModelClient.uses_responses({"base_url": "https://api.openai.com/v1"}))
+        self.assertFalse(agent.ModelClient.uses_responses({"base_url": "https://api.openai.com.example/v1"}))
+        self.assertFalse(agent.ModelClient.uses_responses({"base_url": "http://localhost:9000/v1"}))
+        legacy = [{"role": "assistant", "content": None, "tool_calls": [tool_call("list_entries", {}, id="legacy-call")]},
+                  {"role": "tool", "tool_call_id": "legacy-call", "content": "{}"}]
+        items = agent.ModelClient.responses_input(legacy)
+        self.assertEqual(items[0]["type"], "function_call")
+        self.assertEqual(items[1]["call_id"], "legacy-call")
+        for body in ({"status": "incomplete", "output": []}, {"status": "completed", "output": []}):
+            self.provider.responses.append((200, body))
+            with patch.object(agent.ModelClient, "uses_responses", return_value=True):
+                self.assertEqual(self.request("POST", "/api/chat", {"message": "测试"})[0], 502)
+
+    def test_chat_protocol_strips_responses_metadata_when_switching_provider(self):
+        self.message(content="兼容旧接口")
+        self.app.client.complete([{"role": "assistant", "content": "先前回复", "responses_output": [{"type": "reasoning"}]}], agent.TOOLS)
+        self.assertEqual(self.provider.requests[-1]["path"], "/v1/chat/completions")
+        self.assertNotIn("responses_output", self.provider.requests[-1]["payload"]["messages"][0])
+
+    def test_reasoning_setting_persists_validates_and_resets_for_new_model(self):
+        original = self.app.config.read()
+        self.assertEqual(original["reasoning_effort"], "default")
+        status, result = self.request("POST", "/api/config", {"reasoning_effort": "high"})
+        self.assertEqual(status, 200)
+        self.assertEqual(result["reasoning_effort"], "high")
+        reloaded = agent.Config(self.app.config.path).read()
+        for field in ("base_url", "model", "api_key"):
+            self.assertEqual(reloaded[field], original[field])
+        self.assertEqual(reloaded["reasoning_effort"], "high")
+        saved = self.app.config.path.read_bytes()
+        for invalid in ("ultra", "", None, 3):
+            self.assertEqual(self.request("POST", "/api/config", {"reasoning_effort": invalid})[0], 400)
+            self.assertEqual(self.app.config.path.read_bytes(), saved)
+        status, result = self.request("POST", "/api/config", {"model": "another-model"})
+        self.assertEqual(result["reasoning_effort"], "default")
+        terra = {"base_url": "https://api.openai.com/v1", "model": "gpt-6.1-terra"}
+        self.assertEqual(agent.reasoning_options(terra)[0], ["default", "none", "low", "medium", "high", "xhigh", "max"])
+        self.assertNotIn("none", agent.reasoning_options({**terra, "model": "gpt-6.1-sol"})[0])
+        self.assertEqual(self.request("POST", "/api/config", {**terra, "api_key": "fake-key", "reasoning_effort": "minimal"})[0], 400)
+
+    def test_reasoning_payload_for_responses_and_chat(self):
+        for responses in (True, False):
+            for effort in ("default", "none", "high", "max"):
+                with self.subTest(responses=responses, effort=effort):
+                    self.app.config.update({"reasoning_effort": effort})
+                    if responses:
+                        self.provider.responses.append((200, {"status": "completed", "output": [{"type": "message", "content": [{"type": "output_text", "text": "OK"}]}]}))
+                    else:
+                        self.message(content="OK")
+                    with patch.object(agent.ModelClient, "uses_responses", return_value=responses):
+                        self.app.client.complete([{"role": "user", "content": "test"}], agent.TOOLS)
+                    payload = self.provider.requests[-1]["payload"]
+                    if effort == "default":
+                        self.assertNotIn("reasoning", payload)
+                        self.assertNotIn("reasoning_effort", payload)
+                    elif responses:
+                        self.assertEqual(payload["reasoning"], {"effort": effort})
+                        self.assertNotIn("reasoning_effort", payload)
+                    else:
+                        self.assertEqual(payload["reasoning_effort"], effort)
+                        self.assertNotIn("reasoning", payload)
 
     def test_real_provider_protocol_session_and_idempotency(self):
         self.message(content=None, tool_calls=[tool_call("create_entry", ENTRY)])
